@@ -1,0 +1,340 @@
+---
+title: "P8105_hw6_jg5037"
+author: "Jian Gao-jg5037"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(p8105.datasets)
+library(modelr)
+library(broom)
+library(ggplot2)
+library(janitor)
+```
+
+
+# Problem 1
+```{r data_load,warning=FALSE, message=FALSE}
+# load data
+homicide_raw <- read_csv("datasets/homicide_data.csv")
+
+homicide_df <-
+  homicide_raw %>%
+  mutate(
+    city_state = str_c(city, ", ", state),
+    solved = if_else(disposition == "Closed by arrest", 1, 0),
+    victim_age = suppressWarnings(as.numeric(victim_age))
+  ) %>%
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"),
+    victim_race %in% c("White", "Black")
+  )
+```
+
+```{r problem1a,warning=FALSE, message=FALSE}
+# Problem 1(a)
+# Baltimore logistic regression
+baltimore_mod <-
+  homicide_df %>%
+  filter(city_state == "Baltimore, MD") %>%
+  glm(
+    solved ~ victim_age + victim_sex + victim_race,
+    data = .,
+    family = binomial(link = "logit")
+  )
+
+baltimore_res <-
+  baltimore_mod %>%
+  tidy(conf.int = TRUE, exponentiate = TRUE)
+
+baltimore_res %>%
+  filter(term == "victim_sexMale") %>%
+  select(term, estimate, conf.low, conf.high)
+```
+## Problem 1(b) Answer:
+
+```{r problem1b,warning=FALSE, message=FALSE}
+city_OR <-
+  homicide_df %>%
+  group_by(city_state) %>%
+  nest() %>%
+  mutate(
+    model = map(data, ~ glm(
+      solved ~ victim_age + victim_sex + victim_race,
+      data = .x,
+      family = binomial(link = "logit")
+    )),
+    res = map(model, ~ tidy(.x, exponentiate = TRUE, conf.int = TRUE))
+  ) %>%
+  unnest(res) %>%
+  filter(term == "victim_sexMale") %>%
+  select(city_state, estimate, conf.low, conf.high) %>%
+  mutate(city_state = as.character(city_state)) # make sure it's as character
+city_OR
+
+
+```
+
+## Problem 1(c) Answer:
+```{r problem1c,warning=FALSE, message=FALSE}
+city_OR %>%
+  ggplot(aes(
+    x = estimate,
+    y = forcats::fct_reorder(city_state, estimate)
+  )) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Adjusted Odds Ratios for Solving Homicides (Male vs Female)",
+    subtitle = "Models adjusted for victim age and race",
+    x = "Adjusted OR",
+    y = "City"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 7),
+    axis.text.x = element_text(size = 9),
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 13)
+  )
+
+```
+
+## comments on results:
+
+The plot shows that most cities have odds ratios below or close to 1, meaning there isn’t strong evidence that male victims are more likely to have their cases solved after adjustment. A few cities on the top have ORs above 1, but many of their intervals are wide, so the estimates are uncertain. Overall, the effect of victim sex on case clearance appears small and varies across cities.
+
+
+# Problem 2
+```{r prob2_loading data,warning=FALSE, message=FALSE}
+data("weather_df")
+
+weather_df =
+  p8105.datasets::weather_df %>%
+  as.data.frame() %>%
+  as_tibble() %>%
+  ungroup()
+
+head(weather_df)
+```
+
+
+## Problem 2(a) Answer:
+```{r prob2a,warning=FALSE, message=FALSE}
+# linear regression model
+model_fit <- lm(tmax ~ tmin + prcp, data = weather_df)
+
+tidy(model_fit)
+glance(model_fit)
+```
+
+
+## Problem 2(b) Answer:
+
+```{r prob2b,warning=FALSE, message=FALSE}
+weather_df = weather_df |>
+  drop_na(tmax, tmin, prcp)
+
+# Bootstrap 5000 samples
+set.seed(1)
+boot_samples <-
+  weather_df |>
+  modelr::bootstrap(5000)
+
+# Fit model on each bootstrap sample
+boot_results <-
+  boot_samples |>
+  mutate(
+    models  = map(strap, \(df) lm(tmax ~ tmin + prcp, data = df)),
+    glance  = map(models, glance),
+    tidyres = map(models, tidy)
+  ) |>
+  mutate(
+    r2 = map_dbl(glance, \(g) g$r.squared),
+    beta_ratio = map_dbl(tidyres, \(t) {
+      b1 <- t$estimate[t$term == "tmin"]
+      b2 <- t$estimate[t$term == "prcp"]
+      b1 / b2
+    })
+  ) |>
+  select(r2, beta_ratio)
+
+boot_results
+
+```
+
+## Problem 2(c) Answer:
+```{r prob2c,warning=FALSE, message=FALSE}
+
+# Compute 95% CI
+r2_ci = quantile(boot_results$r2, probs = c(0.025, 0.975))
+ratio_ci = quantile(boot_results$beta_ratio, probs = c(0.025, 0.975))
+
+r2_ci
+ratio_ci
+
+
+# r² distribution
+ggplot(boot_results, aes(x = r2)) +
+  geom_histogram(bins = 40, fill = "skyblue", color = "white") +
+  labs(
+    title = "Bootstrap Distribution of R²",
+    x = "R²", y = "Count"
+  )
+
+# beta1 / beta2 distribution
+ggplot(boot_results, aes(x = beta_ratio)) +
+  geom_histogram(bins = 40, fill = "orange", color = "white") +
+  labs(
+    title = "Bootstrap Distribution of beta_1 / beta_2",
+    x = "beta_1 / beta_2", y = "Count"
+  )
+```
+
+## comments on results:
+
+The bootstrap distribution of r² is fairly concentrated, and the 95% interval shows that the model explains a stable amount of variation in daily maximum temperature.
+
+For β₁/β₂, the distribution is wider and more skewed, suggesting more uncertainty in the relative effects of tmin and precipitation.
+
+Overall, the bootstrap results indicate that tmin is a much stronger predictor of tmax than prcp, and most of the uncertainty in the ratio comes from the precipitation coefficient.
+
+# problem 3
+
+## Problem 3(a) Answer:
+```{r prob3a,warning=FALSE, message=FALSE}
+
+birthweight <- read_csv("datasets/birthweight.csv")
+bw_df <-
+  birthweight |>
+  clean_names() |>
+  mutate(
+    babysex = factor(babysex, levels = c(1, 2), labels = c("male", "female")),
+    frace = recode_factor(
+      frace,
+      `1` = "White",
+      `2` = "Black",
+      `3` = "Asian",
+      `4` = "Puerto Rican",
+      `8` = "Other",
+      `9` = "Unknown"
+    ),
+    mrace = recode_factor(
+      mrace,
+      `1` = "White",
+      `2` = "Black",
+      `3` = "Asian",
+      `4` = "Puerto Rican",
+      `8` = "Other"
+    ),
+    malform = factor(malform, labels = c("absent", "present"))
+  ) |>
+  drop_na()
+head(bw_df)
+
+```
+
+## Problem 3(b) Answer:
+```{r prob3b,warning=FALSE, message=FALSE}
+# regression model
+model_my <-
+  lm(bwt ~ blength + gaweeks + ppwt + wtgain + smoken, data = bw_df)
+
+summary(model_my)
+
+# plot of model residuals against fitted values
+bw_df |>
+  add_predictions(model_my) |>
+  add_residuals(model_my) |>
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, color = "red", linewidth = 1) +
+  labs(
+    title = "Residuals vs Fitted Values for Proposed Model",
+    x = "Predicted birthweight",
+    y = "Residuals"
+  )
+
+```
+
+### comment results
+
+In my proposed model, I use the predictors `blength`, `gaweeks`, `ppwt`, `wtgain`, and `smoken` to explain variation in `bwt`.
+From the regression output, most predictors are statistically significant. The effects of `blength` and `gaweeks` are the largest, which means newborn length and gestational age play the strongest roles in determining birthweight. The coefficient for `smoken` is negative, which matches expectations because heavier smoking tends to lower birthweight.
+
+The residual plot shows that most points are centered around zero without a strong pattern, suggesting that the linear model fits reasonably well. There is slightly more spread in the residuals at higher fitted values, which may indicate less stable predictions for heavier babies, but the overall shape still looks acceptable.
+
+Overall, this model captures the main trends in birthweight. Variables like `blength`, `gaweeks`, `wtgain`, and `smoken` appear to be important predictors, and the residuals do not show major violations of linear model assumptions.
+
+## Problem 3(c) Answer:
+
+```{r}
+set.seed(1)
+
+
+mod_a <- lm(bwt ~ blength + gaweeks, data = bw_df)
+
+
+mod_b <- lm(bwt ~ bhead * blength * babysex, data = bw_df)
+
+
+mod_prop <- lm(bwt ~ blength + gaweeks + ppwt + wtgain + smoken, data = bw_df)
+
+
+cv_df <-
+  crossv_mc(bw_df, n = 100) |>
+  mutate(
+    train = map(train, as_tibble),
+    test  = map(test, as_tibble)
+  )
+
+
+cv_results <-
+  cv_df |>
+  mutate(
+    rmse_a = map2_dbl(train, test, ~ {
+      mod <- lm(bwt ~ blength + gaweeks, data = .x)
+      rmse(model = mod, data = .y)
+    }),
+    rmse_b = map2_dbl(train, test, ~ {
+      mod <- lm(bwt ~ bhead * blength * babysex, data = .x)
+      rmse(model = mod, data = .y)
+    }),
+    rmse_prop = map2_dbl(train, test, ~ {
+      mod <- lm(bwt ~ blength + gaweeks + ppwt + wtgain + smoken, data = .x)
+      rmse(model = mod, data = .y)
+    })
+  ) |>
+  select(rmse_a, rmse_b, rmse_prop)
+
+
+cv_results_summary <-
+  cv_results |>
+  pivot_longer(everything(), names_to = "model", values_to = "rmse") |>
+  group_by(model) |>
+  summarise(
+    mean_rmse = mean(rmse),
+    sd_rmse   = sd(rmse)
+  )
+
+cv_results_summary
+
+```
+### comment results
+
+The cross-validated results show clear differences in predictive performance across the three models.
+The model using only `blength` and `gaweeks` (model `rmse_a`) has the highest average prediction error (mean_rmse ≈ 332), indicating that these two predictors alone do not fully explain variation in `bwt`.
+
+The interaction model `rmse_b`, which includes `bhead * blength * babysex`, performs the best.
+It has the lowest prediction error (mean_rmse ≈ 289) and also the smallest standard deviation across folds (sd_rmse ≈ 9.22).
+This suggests that head circumference, length, infant sex, and their interactions capture important structure for predicting `bwt`.
+
+The proposed model `rmse_prop` performs moderately well, with mean_rmse ≈ 325.
+It is better than `rmse_a` but clearly worse than the full interaction model.
+
+Overall, the cross-validation comparison indicates that the interaction model (`rmse_b`) provides the strongest predictive performance for `bwt` among the three models.
